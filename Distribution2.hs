@@ -13,13 +13,6 @@
 -- representing discrete probability distributions.
 -- 
 -- The data structure is optimized for fast sampling from the distribution.
---
--- Complexity of the various operations on the data structure is
--- complicated, as the structure enforces a BST property on the events/outcomes
--- but enforces a heap structure on the probabilities. Therefore, more likely
--- outcomes will be sampled faster than unlikely outcomes, which is great for
--- sampling lots of random events, but may lead to O(n) performance in 
--- certain pathological cases.
 -----------------------------------------------------------------------------
 
 module Numeric.Probability.Distribution (
@@ -109,7 +102,28 @@ insertTree (o',p') (DTree o p s c l r)
     s' = s + p'
     c' = c + 1
 
-sizeInvariant :: (Num p, Eq p) => DTree p e -> Bool
+-- Returns random value in range (0,n]
+randomPositiveUpto :: (Eq n, Num n, Random n, MonadRandom m) => n -> m n
+randomPositiveUpto n = do
+    randoms <- getRandomRs (0,n)
+    return . head . dropWhile (==0) $ randoms
+
+-- | Take a sample from the distribution. Can be used with e.g. @evalRand@
+-- or @evalRandIO@ from @Control.Monad.Random@. @O(1)@ for heavily
+-- imbalanced distributions, @O(log(n))@ average case, @O(n)$ worst case.
+sample :: (Ord p, Num p, Random p, MonadRandom m) => Distribution p o -> m o
+sample (Distribution tree _ _) = sampleTree tree
+
+sampleTree :: (Ord p, Num p, Random p, MonadRandom m) => DTree p o -> m o
+sampleTree Leaf = error "Error: Can't sample an empty distribution"
+sampleTree (DTree event prob sum count l r) = do
+    index <- randomPositiveUpto sum
+    let result | index > sumOf l + prob = sampleTree r
+               | index > sumOf l        = return event
+               | index > 0              = sampleTree l
+    result
+
+sizeInvariant :: (Num p, Eq p) => DTree p o -> Bool
 sizeInvariant Leaf = True
 sizeInvariant (DTree e p s c l r) = (c == countOf l + countOf r + 1) &&
                                        (countOf l <= countOf r + 1) &&
