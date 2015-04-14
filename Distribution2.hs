@@ -108,3 +108,37 @@ insertTree (o',p') (DTree o p s c l r)
     s' = s + p
     c' = c + 1
 
+sizeInvariant :: (Num p, Eq p) => DTree p e -> Bool
+sizeInvariant Leaf = True
+sizeInvariant (DTree e p s c l r) = (c == countOf l + countOf r + 1) &&
+                                       (countOf l <= countOf r + 1) &&
+                                       (countOf r <= countOf l + 1) &&
+                                       sizeInvariant l &&
+                                       sizeInvariant r
+
+sumInvariant :: (Num p, Eq p) => DTree p e -> Bool
+sumInvariant Leaf = True
+sumInvariant (DTree e p s c l r) = (s == p + sumOf l + sumOf r) && 
+                                 (sumInvariant l) &&
+                                 (sumInvariant r)
+
+heapInvariant :: (Ord p, Num p) => DTree p e -> Bool
+heapInvariant Leaf = True
+heapInvariant (DTree e p s c l r) = (p > probOf l) &&
+                                  (p > probOf r) &&
+                                  heapInvariant l &&
+                                  heapInvariant r
+
+zeroInvariant :: (Ord p, Num p) => DTree p e -> Bool
+zeroInvariant Leaf = True
+zeroInvariant (DTree _ p _ c l r) = (p /= 0) && 
+                                  zeroInvariant l && 
+                                  zeroInvariant r
+
+invariants :: (Num p, Ord p, Ord e) => Distribution p e -> Bool
+invariants (Distribution tree members dups)
+    | not (sumInvariant  tree) = error "Sum invariant failure"
+    | not (heapInvariant tree) = error "Heap invariant failure"
+    | not (zeroInvariant tree) = error "Zero-chance values present"
+    | not (sizeInvariant tree) = error "Tree is not balanced correctly"
+    | otherwise                = True
