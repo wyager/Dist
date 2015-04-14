@@ -1,19 +1,47 @@
 {-# LANGUAGE BangPatterns, GeneralizedNewtypeDeriving #-}
 
+-----------------------------------------------------------------------------
+-- |
+-- Module      :  Numeric.Probability.Distribution
+-- Copyright   :  (c) William Yager 2015
+-- License     :  MIT
+-- Maintainer  :  will (dot) yager (at) gmail (dot) com
+-- Stability   :  provisional
+-- Portability :  portable
+--
+-- This module provides a data structure and associated functions for
+-- representing discrete probability distributions.
+-- 
+-- The data structure is optimized for fast sampling from the distribution.
+--
+-- Complexity of the various operations on the data structure is
+-- complicated, as the structure enforces a BST property on the events/outcomes
+-- but enforces a heap structure on the probabilities. Therefore, more likely
+-- outcomes will be sampled faster than unlikely outcomes, which is great for
+-- sampling lots of random events, but may lead to O(n) performance in 
+-- certain pathological cases.
+-----------------------------------------------------------------------------
+
 module Numeric.Probability.Distribution (
+    -- * Distribution type
     Distribution,
-    sumOf,
+    -- * Sampling
+    sample,
+    probabilityOf,
+    -- * Building
     insert,
     empty,
     toList,
     fromList,
+    -- * Combining
     joint,
     sum,
     product,
     zipWith,
+    zipWithKey,
+    -- * Reducing
     foldrP,
-    probabilityOf,
-    sample,
+    sumOf,
     normalize
 ) where
 
@@ -36,11 +64,11 @@ instance (Ord e, Num p, Ord p) => Monoid (Distribution p e) where
 instance (Show p, Show e) => Show (Distribution p e) where
     show dist = "fromList " ++ show (toList dist)
 
--- | An empty distribution. Trying to sample from it will yield an error.
+-- | An empty distribution. Trying to sample from it will yield an error. @O(1)@
 empty :: Distribution p e
 empty = Leaf
 
--- | Re-weights the distribution so the sum of all probabilities is 1.
+-- | Re-weights the distribution so the sum of all probabilities is 1. @O(n)@
 normalize :: Fractional p => Distribution p e -> Distribution p e
 normalize dist = normalize' (sumOf dist) dist
 
@@ -58,41 +86,43 @@ joinAscList f ((pa,ea):as) ((pb,eb):bs)
     | ea <  eb = (f ea pa 0 , ea) : joinAscList f as           ((pb,eb):bs) 
 
 -- | Combines two distributions using some function.
--- The function should take the value and the probability of the value in 
+-- The function should take some value and the probability of the value in 
 -- each distribution, and return a new probability. If a value is not present
--- in a distribution, it has probability zero. 
+-- in a distribution, it has probability zero. @O(n*log(n))@ average case.
 zipWithKey :: (Ord e, Ord p, Num p) => (e -> p -> p -> p) -> Distribution p e -> Distribution p e -> Distribution p e
 zipWithKey f a b = fromList $ joinAscList f (toList a) (toList b)
 
 -- | Combines two distributions using some function.
--- The function should take the probability of the value in each distribution 
+-- The function should take the probability of some value in each distribution 
 -- and return a new probability. If a value is not present in a distribution,
--- it has probability zero. 
+-- it has probability zero. @O(n*log(n))@ average case.
 zipWith :: (Ord e, Ord p, Num p) => (p -> p -> p) -> Distribution p e -> Distribution p e -> Distribution p e
 zipWith f a b = zipWithKey (\_ -> f) a b
 
--- | Adds the elements in each distribution. Equivalent to @'zipWith' (+)@.
+-- | Adds the elements in each distribution. Equivalent to @'zipWith' (+)@. 
+-- Worst-case @O(max(m,n))@.
 sum :: (Ord e, Num p, Ord p) => Distribution p e -> Distribution p e -> Distribution p e
 sum a b = foldrP (\(p,e) dist -> insert p e dist) a b
 
--- | Multiplies the distributions together. Equivalent to @'zipWith' (*)@.
+-- | Multiplies the distributions together. Equivalent to @'zipWith' (*)@. @O(max(m,n))@
 product :: (Ord e, Num p, Ord p) => Distribution p e -> Distribution p e -> Distribution p e
 product = zipWith (*) 
 
--- | Creates the joint distribution from two distributions.
+-- | Creates the joint distribution from two distributions. @O(mn*log(mn))@ average case.
 joint :: (Num p, Ord p, Ord e1, Ord e2) => Distribution p e1 -> Distribution p e2 -> Distribution p (e1, e2)
 joint d1 d2 = fromList [(p1*p2, (e1, e2)) | (p1, e1) <- toList d1, (p2, e2) <- toList d2]
 
--- | Converts the distribution to a list of (probability, outcome) pairs.
+-- | Converts the distribution to a list of (probability, outcome) pairs. @O(n)@.
 toList :: Distribution p e -> [(p,e)]
 toList = foldrP (:) []
 
--- | A right-associative fold on the distribution.
+-- | A right-associative fold on the distribution. @O(n)@
 foldrP :: ((p,e) -> b -> b) -> b -> Distribution p e -> b
 foldrP _ b Leaf = b
 foldrP f b (DTree e p _ l r) = foldrP f (f (p,e) (foldrP f b r)) l
 
--- | The probability of a given outcome
+-- | The probability of a given outcome. Average case @O(log(n))@
+-- with @O(1)@ best case and @O(n)@ worst case.
 probabilityOf :: (Ord e, Num p) => Distribution p e -> e -> p
 probabilityOf Leaf              _            = 0
 probabilityOf (DTree e p _ l r) e' | e' == e = p
@@ -100,6 +130,7 @@ probabilityOf (DTree e p _ l r) e' | e' == e = p
                                    | e' >  e = probabilityOf r e'
 
 -- | Converts from a list of (probability, outcome) pairs to a distribution.
+-- @O(n*log(n))@ average case.
 fromList :: (Ord e, Ord p, Num p) => [(p,e)] -> Distribution p e
 fromList = foldl (\dist (p,e) -> insert p e dist) empty
 
@@ -108,7 +139,7 @@ nodeProbability Leaf = 0
 nodeProbability (DTree _ p _ _ _) = p
 
 -- | The total probability of the distribution. 
--- After normalization, this will be equal to 1.
+-- After normalization, this will be equal to 1. @O(1)@.
 sumOf :: Num p => Distribution p e -> p
 sumOf Leaf = 0
 sumOf (DTree _ _ s _ _) = s
@@ -122,7 +153,7 @@ sumOf (DTree _ _ s _ _) = s
 
 -- | Inserts a (probability, outcome) pair into the distribution.
 -- If the outcome is already in the distribution, the new probability will be 
--- added.
+-- added. @O(1)@ best, @O(log(n))@ average, @O(n)@ worst.
 insert :: (Num p, Ord p, Ord e) => p -> e -> Distribution p e -> Distribution p e
 insert 0     _      dist = dist
 insert prob' event' Leaf = DTree event' prob' prob' Leaf Leaf
@@ -146,7 +177,8 @@ randomPositiveUpto n = do
     return . head . dropWhile (==0) $ randoms
 
 -- | Take a sample from the distribution. Can be used with e.g. @evalRand@
--- or @evalRandIO@ from @Control.Monad.Random@.
+-- or @evalRandIO@ from @Control.Monad.Random@. @O(1)@ for heavily
+-- imbalanced distributions, @O(log(n))@ average case, @O(n)$ worst case.
 sample :: (Ord p, Num p, Random p, MonadRandom m) => Distribution p e -> m e
 sample Leaf = error "Error: Can't sample an empty distribution"
 sample (DTree event prob sum l r) = do
