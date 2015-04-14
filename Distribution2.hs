@@ -57,13 +57,16 @@ rightOf   (DTree _ _ _ _ _ r) = r
 
 
 insert :: (Ord o, Num p, Ord p) => (o,p) -> Distribution p o -> Distribution p o
-insert (o',p') (Distribution tree outcomes dups) = if dups' * 2 < countOf tree
+insert (o',p') (Distribution tree outcomes dups) = if dups' * 2 <= countOf tree
     then Distribution tree' outcomes' dups' -- Not too many repeated elements
-    else fromUniqList . toList $ Distribution tree' Set.empty 0
+    else fromUniqList . toList $ Distribution tree' outcomes' 0
     where
     dups' = if o' `member` outcomes then dups + 1 else dups
     outcomes' = Set.insert o' outcomes
     tree' = insertTree (o',p') tree
+
+empty :: (Num p) => Distribution p o
+empty = Distribution Leaf Set.empty 0
 
 reduce :: (Ord o, Num p) => [(o,p)] -> Map.Map o p
 reduce = foldl' (\map (o,p) -> Map.insertWith (+) o p map) Map.empty
@@ -76,9 +79,7 @@ toList dist = Map.toList . reduce . toRepeatList $ dist
 
 -- | Assumes there are no repeated items in the list. @O(n*log(n))@ amortized.
 fromUniqList :: (Ord o, Num p, Ord p) => [(o,p)] -> Distribution p o
-fromUniqList xs = Distribution tree Set.empty 0
-    where
-    tree = foldl' (\tree pair -> insertTree pair tree) Leaf xs
+fromUniqList xs = foldl' (\dist pair -> insert pair dist) empty xs
 -- | Doesn't bother to eliminate repeats. @O(n)@
 toRepeatList :: Distribution p o -> [(o,p)]
 toRepeatList = foldrWithP (:) []
@@ -102,10 +103,10 @@ insertTree (o',p') (DTree o p s c l r)
         then DTree o  p  s' c' (insertTree (o',p') l) r
         else DTree o  p  s' c' l                      (insertTree (o',p') r)
     | p' >  p = if countOf l < countOf r
-        then DTree o' p' s' c' (insertTree (o,p) l)   r
-        else DTree o' p' s' c' l                      (insertTree (o,p) r)
+        then DTree o' p' s' c' (insertTree (o,p)   l) r
+        else DTree o' p' s' c' l                      (insertTree (o,p)   r)
     where
-    s' = s + p
+    s' = s + p'
     c' = c + 1
 
 sizeInvariant :: (Num p, Eq p) => DTree p e -> Bool
@@ -142,3 +143,5 @@ invariants (Distribution tree members dups)
     | not (zeroInvariant tree) = error "Zero-chance values present"
     | not (sizeInvariant tree) = error "Tree is not balanced correctly"
     | otherwise                = True
+
+
