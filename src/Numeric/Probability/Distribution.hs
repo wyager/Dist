@@ -55,9 +55,8 @@ module Numeric.Probability.Distribution (
     invariants
 ) where
 
-import Prelude hiding (product, sum, zipWith)
+import Prelude hiding (product, sum)
 import Control.Monad.Random (MonadRandom, Random, getRandomRs)
-import Data.Monoid (Monoid, mempty, mappend)
 import Data.Word (Word)
 import           Data.Set (Set, member)
 import qualified Data.Set as Set
@@ -66,12 +65,11 @@ import Data.List (foldl')
 
 -- | A probability distribution with probabilities of type @p@ and
 -- outcomes/events of type @o@.
-data Distribution p o = Distribution !(DTree p o) !(Set o) !Word deriving Show
+data Distribution p o = Distribution !(DTree p o) !(Set o) !Word
 
 
 data DTree p o = Leaf
                | DTree !o !p !p !Word !(DTree p o) !(DTree p o)
-               deriving Show
 
 outcomeOf (DTree o _ _ _ _ _) = o
 probOf    Leaf                = 0
@@ -82,6 +80,9 @@ countOf   Leaf                = 0
 countOf   (DTree _ _ _ c _ _) = c
 leftOf    (DTree _ _ _ _ l _) = l
 rightOf   (DTree _ _ _ _ _ r) = r
+
+instance (Num p, Show p, Ord o, Show o) => Show (Distribution p o) where
+    show dist = "fromList " ++ show (toList dist)
 
 
 -- | The sum of all probabilities in the distribution. @O(1)@
@@ -103,6 +104,7 @@ normalize' sum (DTree e p s c l r) = DTree e (p/sum) (s/sum) c l' r'
 -- Inserting @(o,p1)@ and @(o,p2)@ results in the same sampled distribution as
 -- inserting @(o,p1+p2)@. @O(log(n))@ amortized.
 insert :: (Ord o, Num p, Ord p) => (o,p) -> Distribution p o -> Distribution p o
+insert (_, 0)  dist                              = dist
 insert (o',p') (Distribution tree outcomes dups) = if dups' * 2 <= countOf tree
     then Distribution tree' outcomes' dups' -- Not too many repeated elements
     else fromUniqList . toList $ Distribution tree' outcomes 0
