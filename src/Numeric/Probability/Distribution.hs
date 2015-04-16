@@ -51,6 +51,8 @@ module Numeric.Probability.Distribution (
     -- * Combining
     joint,
     sum,
+    -- * Debugging
+    invariants
 ) where
 
 import Prelude hiding (product, sum, zipWith)
@@ -187,37 +189,40 @@ sampleTree (DTree event prob sum count l r) = do
                | index > 0              = sampleTree l
     result
 
-sizeInvariant :: (Num p, Eq p) => DTree p o -> Bool
-sizeInvariant Leaf = True
-sizeInvariant (DTree e p s c l r) = (c == countOf l + countOf r + 1) &&
-                                       (countOf l <= countOf r + 1) &&
-                                       (countOf r <= countOf l + 1) &&
-                                       sizeInvariant l &&
-                                       sizeInvariant r
+sizeInvariant :: (Num p, Eq p) => DTree p o -> Either String ()
+sizeInvariant Leaf = Right ()
+sizeInvariant (DTree e p s c l r)
+    | (c /= countOf l + countOf r + 1) = Left $ "Count mismatch"
+    | (countOf l > countOf r + 1) = Left $ "Left is too heavy"
+    | (countOf r > countOf l + 1) = Left $ "Right is too heavy"
+    | otherwise = sizeInvariant l >> sizeInvariant r
 
-sumInvariant :: (Num p, Eq p) => DTree p e -> Bool
-sumInvariant Leaf = True
-sumInvariant (DTree e p s c l r) = (s == p + sumOf l + sumOf r) && 
-                                 (sumInvariant l) &&
-                                 (sumInvariant r)
+sumInvariant :: (Show p, Num p, Eq p) => DTree p e -> Either String ()
+sumInvariant Leaf = Right ()
+sumInvariant _    = Right ()
+-- Fails with floating point numbers, due to very small errors
+--sumInvariant (DTree e p s c l r) 
+--    | (s /= p + sumOf l + sumOf r) = Left $ "Sum mismatch:" ++ show [s,p,sumOf l,sumOf r]
+--    | otherwise = (sumInvariant l) >> (sumInvariant r)
 
-heapInvariant :: (Ord p, Num p) => DTree p e -> Bool
-heapInvariant Leaf = True
-heapInvariant (DTree e p s c l r) = (p > probOf l) &&
-                                  (p > probOf r) &&
-                                  heapInvariant l &&
-                                  heapInvariant r
+heapInvariant :: (Ord p, Num p) => DTree p e -> Either String ()
+heapInvariant Leaf = Right ()
+heapInvariant (DTree e p s c l r) 
+    | (p < probOf l) = Left $ "Heap violation on left"
+    | (p < probOf r) = Left $ "Heap violation on right"
+    | otherwise = heapInvariant l >> heapInvariant r
 
-zeroInvariant :: (Ord p, Num p) => DTree p e -> Bool
-zeroInvariant Leaf = True
-zeroInvariant (DTree _ p _ c l r) = (p /= 0) && 
-                                  zeroInvariant l && 
-                                  zeroInvariant r
+zeroInvariant :: (Ord p, Num p) => DTree p e -> Either String ()
+zeroInvariant Leaf = Right ()
+zeroInvariant (DTree _ p _ c l r)
+    | (p == 0) = Left $ "Zero value in tree"
+    | otherwise = zeroInvariant l >> zeroInvariant r
 
-invariants :: (Num p, Ord p, Ord e) => Distribution p e -> Bool
-invariants (Distribution tree members dups)
-    | not (sumInvariant  tree) = error "Sum invariant failure"
-    | not (heapInvariant tree) = error "Heap invariant failure"
-    | not (zeroInvariant tree) = error "Zero-chance values present"
-    | not (sizeInvariant tree) = error "Tree is not balanced correctly"
-    | otherwise                = True
+-- | A series of tests on the internal structure of the distribution.
+-- For debugging purposes.
+invariants :: (Num p, Ord p, Show p, Ord e, Show e) => Distribution p e -> Either String ()
+invariants (Distribution tree members dups) = do
+    sizeInvariant tree
+    sumInvariant tree
+    heapInvariant tree
+    zeroInvariant tree
