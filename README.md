@@ -1,4 +1,4 @@
-# Distribution
+# Dist
 
 #### A Haskell library for probability distributions
 
