@@ -11,164 +11,159 @@
 --
 -- This module provides a data structure and associated functions for
 -- representing discrete probability distributions.
+--
+-- All time and space complexity metrics are given in terms of @n@. In this 
+-- case, @n@ refers to the number of unique outcomes inserted into the tree.
+-- If one were to construct a tree by inserting a billion of the same
+-- outcome, @n@ would still be 1.
 -- 
 -- The data structure is optimized for fast sampling from the distribution.
+-- Sampling ranges from @O(1)@ to @O(log(n))@ depending on the distribution.
 --
--- Complexity of the various operations on the data structure is
--- complicated, as the structure enforces a BST property on the events/outcomes
--- but enforces a heap structure on the probabilities. Therefore, more likely
--- outcomes will be sampled faster than unlikely outcomes, which is great for
--- sampling lots of random events, but may lead to O(n) performance in 
--- certain pathological cases.
+-- Under the hood, the distribution is represented by a perfectly balanced
+-- binary tree. The tree enforces a heap property, where more likely outcomes
+-- are closer to the top than less likely outcomes. Because we're more 
+-- likely to sample from those outcomes, we minimize the amount of time
+-- spent traversing the tree.
+--
+-- When a duplicate outcome is inserted into the tree, the tree's "dups"
+-- counter is incremented. When more than half the tree is duplicate entries,
+-- the entire tree is rebuilt from scratch. Using amortized complexity 
+-- analysis, we can show that insertion is, at worst, @log(n)@ amortized
+-- complexity. This prevents the size of tree from increasing to more than
+-- @O(n)@, even with many duplicate outcomes inserted.
 -----------------------------------------------------------------------------
 
 module Numeric.Probability.Distribution (
-    -- * Distribution type
+    -- * The distribution type
     Distribution,
-    -- * Sampling
+    -- * Probability operations
     sample,
-    probabilityOf,
+    cumulate,
+    normalize,
     -- * Building
-    insert,
     empty,
-    toList,
+    insert,
     fromList,
+    -- * Reducing
+    toList,
+    foldrWithP,
     -- * Combining
     joint,
     sum,
-    product,
-    zipWith,
-    zipWithKey,
-    -- * Reducing
-    foldrP,
-    sumOf,
-    normalize
 ) where
 
 import Prelude hiding (product, sum, zipWith)
 import Control.Monad.Random (MonadRandom, Random, getRandomRs)
 import Data.Monoid (Monoid, mempty, mappend)
+import Data.Word (Word)
+import           Data.Set (Set, member)
+import qualified Data.Set as Set
+import qualified Data.Map.Strict as Map
+import Data.List (foldl')
 
 -- | A probability distribution with probabilities of type @p@ and
--- outcomes/events of type @e@.
-data Distribution p e = Leaf
-                      | DTree {eventOf :: !e, probability :: !p, treeSum :: !p,
-                               leftOf ::  !(Distribution p e),
-                               rightOf :: !(Distribution p e)}
-                      deriving (Eq)
+-- outcomes/events of type @o@.
+data Distribution p o = Distribution !(DTree p o) !(Set o) !Word deriving Show
 
-instance (Ord e, Num p, Ord p) => Monoid (Distribution p e) where
-    mempty = empty
-    mappend = product
 
-instance (Show p, Show e) => Show (Distribution p e) where
-    show dist = "fromList " ++ show (toList dist)
+data DTree p o = Leaf
+               | DTree !o !p !p !Word !(DTree p o) !(DTree p o)
+               deriving Show
 
--- | An empty distribution. Trying to sample from it will yield an error. @O(1)@
-empty :: Distribution p e
-empty = Leaf
+outcomeOf (DTree o _ _ _ _ _) = o
+probOf    Leaf                = 0
+probOf    (DTree _ p _ _ _ _) = p
+sumOf     Leaf                = 0
+sumOf     (DTree _ _ s _ _ _) = s
+countOf   Leaf                = 0
+countOf   (DTree _ _ _ c _ _) = c
+leftOf    (DTree _ _ _ _ l _) = l
+rightOf   (DTree _ _ _ _ _ r) = r
 
--- | Re-weights the distribution so the sum of all probabilities is 1. @O(n)@
-normalize :: Fractional p => Distribution p e -> Distribution p e
-normalize dist = normalize' (sumOf dist) dist
 
-normalize' :: Fractional p => p -> Distribution p e -> Distribution p e
-normalize' d Leaf              = Leaf
-normalize' d (DTree e p s l r) = DTree e (p/d) (s/d) (normalize' d l) (normalize' d r)
+-- | The sum of all probabilities in the distribution. @O(1)@
+cumulate :: (Num p) => Distribution p o -> p
+cumulate (Distribution tree _ _) = sumOf tree
 
-joinAscList :: (Ord e, Num p) => (e -> p -> p -> p) -> [(p,e)] -> [(p,e)] -> [(p,e)]
-joinAscList f []           []         = []
-joinAscList f ((p,e):xs)   []         = (f e p 0, e) : joinAscList f xs []
-joinAscList f []           ((p,e):xs) = (f e 0 p, e) : joinAscList f [] xs
-joinAscList f ((pa,ea):as) ((pb,eb):bs) 
-    | ea == eb = (f ea pa pb, ea) : joinAscList f as           bs
-    | ea >  eb = (f eb 0  pb, eb) : joinAscList f ((pa,ea):as) bs
-    | ea <  eb = (f ea pa 0 , ea) : joinAscList f as           ((pb,eb):bs) 
-
--- | Combines two distributions using some function.
--- The function should take some value and the probability of the value in 
--- each distribution, and return a new probability. If a value is not present
--- in a distribution, it has probability zero. @O(n*log(n))@ average case.
-zipWithKey :: (Ord e, Ord p, Num p) => (e -> p -> p -> p) -> Distribution p e -> Distribution p e -> Distribution p e
-zipWithKey f a b = fromList $ joinAscList f (toList a) (toList b)
-
--- | Combines two distributions using some function.
--- The function should take the probability of some value in each distribution 
--- and return a new probability. If a value is not present in a distribution,
--- it has probability zero. @O(n*log(n))@ average case.
-zipWith :: (Ord e, Ord p, Num p) => (p -> p -> p) -> Distribution p e -> Distribution p e -> Distribution p e
-zipWith f a b = zipWithKey (\_ -> f) a b
-
--- | Adds the elements in each distribution. Equivalent to @'zipWith' (+)@. 
--- Worst-case @O(max(m,n))@.
-sum :: (Ord e, Num p, Ord p) => Distribution p e -> Distribution p e -> Distribution p e
-sum a b = foldrP (\(p,e) dist -> insert p e dist) a b
-
--- | Multiplies the distributions together. Equivalent to @'zipWith' (*)@. @O(max(m,n))@
-product :: (Ord e, Num p, Ord p) => Distribution p e -> Distribution p e -> Distribution p e
-product = zipWith (*) 
-
--- | Creates the joint distribution from two distributions. @O(mn*log(mn))@ average case.
-joint :: (Num p, Ord p, Ord e1, Ord e2) => Distribution p e1 -> Distribution p e2 -> Distribution p (e1, e2)
-joint d1 d2 = fromList [(p1*p2, (e1, e2)) | (p1, e1) <- toList d1, (p2, e2) <- toList d2]
-
--- | Converts the distribution to a list of (probability, outcome) pairs. @O(n)@.
-toList :: Distribution p e -> [(p,e)]
-toList = foldrP (:) []
-
--- | A right-associative fold on the distribution. @O(n)@
-foldrP :: ((p,e) -> b -> b) -> b -> Distribution p e -> b
-foldrP _ b Leaf = b
-foldrP f b (DTree e p _ l r) = foldrP f (f (p,e) (foldrP f b r)) l
-
--- | The probability of a given outcome. Average case @O(log(n))@
--- with @O(1)@ best case and @O(n)@ worst case.
-probabilityOf :: (Ord e, Num p) => Distribution p e -> e -> p
-probabilityOf Leaf              _            = 0
-probabilityOf (DTree e p _ l r) e' | e' == e = p
-                                   | e' <  e = probabilityOf l e'
-                                   | e' >  e = probabilityOf r e'
-
--- | Converts from a list of (probability, outcome) pairs to a distribution.
--- @O(n*log(n))@ average case.
-fromList :: (Ord e, Ord p, Num p) => [(p,e)] -> Distribution p e
-fromList = foldl (\dist (p,e) -> insert p e dist) empty
-
-nodeProbability :: Num p => Distribution p e -> p
-nodeProbability Leaf = 0
-nodeProbability (DTree _ p _ _ _) = p
-
--- | The total probability of the distribution. 
--- After normalization, this will be equal to 1. @O(1)@.
-sumOf :: Num p => Distribution p e -> p
-sumOf Leaf = 0
-sumOf (DTree _ _ s _ _) = s
-
--- invariants:
---     da leftOf db iff da < db
---     da rightOf db iff da > db
---     for all trees, the most likely thing in the tree is at the top
---     sum of a tree == the sum of all probabilities in that tree
---     No values with zero probability in the tree
-
--- | Inserts a (probability, outcome) pair into the distribution.
--- If the outcome is already in the distribution, the new probability will be 
--- added. @O(1)@ best, @O(log(n))@ average, @O(n)@ worst.
-insert :: (Num p, Ord p, Ord e) => p -> e -> Distribution p e -> Distribution p e
-insert 0     _      dist = dist
-insert prob' event' Leaf = DTree event' prob' prob' Leaf Leaf
-insert prob' event' (DTree event prob sum left right)
-    | event' == event =           DTree event (prob + prob') sum' left  right
-    | event' <  event = rotated $ DTree event prob           sum' left' right
-    | event' >  event = rotated $ DTree event prob           sum' left  right'
+-- | Normalizes the distribution.
+-- After normalizing, @'cumulate' distribution@ is 1. @O(n)@
+normalize :: (Fractional p) => Distribution p o -> Distribution p o
+normalize (Distribution tree@(DTree _ _ sum _ _ _) members dups) =
+    Distribution (normalize' sum tree) members dups
+normalize' sum Leaf                = Leaf
+normalize' sum (DTree e p s c l r) = DTree e (p/sum) (s/sum) c l' r'
     where
-    left' @(DTree el pl sl ll rl) = insert prob' event' left
-    right'@(DTree er pr sr lr rr) = insert prob' event' right
-    rotated dist@(DTree e p s l r)
-        | nodeProbability r > p = DTree er pr s (DTree e p (p + sumOf l + sumOf (leftOf r)) l (leftOf r)) (rightOf r)
-        | nodeProbability l > p = DTree el pl s (leftOf l) (DTree e p (p + sumOf r + sumOf (rightOf l)) (rightOf l) r)
-        | otherwise             = DTree e p s l r -- No need to do anything
-    sum' = sum + prob'
+    l' = normalize' sum l
+    r' = normalize' sum r
+
+-- | Insert an outcome into the distribution.
+-- Inserting @(o,p1)@ and @(o,p2)@ results in the same sampled distribution as
+-- inserting @(o,p1+p2)@. @O(log(n))@ amortized.
+insert :: (Ord o, Num p, Ord p) => (o,p) -> Distribution p o -> Distribution p o
+insert (o',p') (Distribution tree outcomes dups) = if dups' * 2 <= countOf tree
+    then Distribution tree' outcomes' dups' -- Not too many repeated elements
+    else fromUniqList . toList $ Distribution tree' outcomes 0
+    where
+    dups' = if o' `member` outcomes then dups + 1 else dups
+    outcomes' = Set.insert o' outcomes
+    tree' = insertTree (o',p') tree
+
+-- | The empty distribution. @O(1)@
+empty :: (Num p) => Distribution p o
+empty = Distribution Leaf Set.empty 0
+
+reduce :: (Ord o, Num p) => [(o,p)] -> Map.Map o p
+reduce = foldl' (\map (o,p) -> Map.insertWith (+) o p map) Map.empty
+-- | @O(n*log(n))@ amortized. 
+fromList :: (Ord o, Num p, Ord p) => [(o,p)] -> Distribution p o
+fromList xs = fromUniqList . Map.toList . reduce $ xs
+-- | @O(n*log(n))@.
+toList :: (Ord o, Num p) => Distribution p o -> [(o,p)]
+toList dist = Map.toList . reduce . toRepeatList $ dist
+
+-- | Assumes there are no repeated items in the list. @O(n*log(n))@ amortized.
+fromUniqList :: (Ord o, Num p, Ord p) => [(o,p)] -> Distribution p o
+fromUniqList xs = foldl' (\dist pair -> insert pair dist) empty xs
+-- | Doesn't bother to eliminate repeats. @O(n)@
+toRepeatList :: Distribution p o -> [(o,p)]
+toRepeatList = foldrWithP (:) []
+
+-- | A right-associative fold on the tree structure, including the
+-- probabilities. Note that outcomes may be repeated within the data structure.
+-- If you want identical outcomes to be lumped together, fold on the list 
+-- produced by @'toList'@. @O(n)@.
+foldrWithP :: ((o,p) -> b -> b) -> b -> Distribution p o -> b
+foldrWithP f b (Distribution tree _ _) = foldrTreeWithP f b tree
+
+foldrTreeWithP :: ((o,p) -> b -> b) -> b -> DTree p o -> b
+foldrTreeWithP f b Leaf = b
+foldrTreeWithP f b (DTree o p _ _ l r) = foldrTreeWithP f (f (o,p) (foldrTreeWithP f b r)) l
+
+insertTree :: (Num p, Ord p) => (o,p) -> DTree p o -> DTree p o
+insertTree (o',p') Leaf = DTree o' p' p' 1 Leaf Leaf
+insertTree (o',p') (DTree o p s c l r)
+    | p' <= p = if countOf l < countOf r
+        then DTree o  p  s' c' (insertTree (o',p') l) r
+        else DTree o  p  s' c' l                      (insertTree (o',p') r)
+    | p' >  p = if countOf l < countOf r
+        then DTree o' p' s' c' (insertTree (o,p)   l) r
+        else DTree o' p' s' c' l                      (insertTree (o,p)   r)
+    where
+    s' = s + p'
+    c' = c + 1
+
+-- | Creates a new distribution that's the joint distribution of the two provided.
+-- @O(nm*log(nm))@ amortized.
+joint :: (Ord o1, Ord o2, Num p, Ord p) => Distribution p o1 -> Distribution p o2 -> Distribution p (o1, o2)
+joint da db = fromList $ [((a,b), pa * pb) | 
+                          (a,pa) <- toList da, 
+                          (b,pb) <- toList db]
+
+-- | Creates a new distribution by summing the probabilities of the outcomes
+-- in the two provided. @O((n+m)log(n+m))@ amortized.
+sum :: (Ord o, Num p, Ord p) => Distribution p o -> Distribution p o -> Distribution p o
+sum da db = fromList $ toRepeatList da ++ toRepeatList db
 
 -- Returns random value in range (0,n]
 randomPositiveUpto :: (Eq n, Num n, Random n, MonadRandom m) => n -> m n
@@ -177,49 +172,52 @@ randomPositiveUpto n = do
     return . head . dropWhile (==0) $ randoms
 
 -- | Take a sample from the distribution. Can be used with e.g. @evalRand@
--- or @evalRandIO@ from @Control.Monad.Random@. @O(1)@ for heavily
--- imbalanced distributions, @O(log(n))@ average case, @O(n)$ worst case.
-sample :: (Ord p, Num p, Random p, MonadRandom m) => Distribution p e -> m e
-sample Leaf = error "Error: Can't sample an empty distribution"
-sample (DTree event prob sum l r) = do
+-- or @evalRandIO@ from @Control.Monad.Random@. @O(log(n))@ for a uniform 
+-- distribution (worst case), but approaches @O(1)@ with less balanced
+-- distributions.
+sample :: (Ord p, Num p, Random p, MonadRandom m) => Distribution p o -> m o
+sample (Distribution tree _ _) = sampleTree tree
+
+sampleTree :: (Ord p, Num p, Random p, MonadRandom m) => DTree p o -> m o
+sampleTree Leaf = error "Error: Can't sample an empty distribution"
+sampleTree (DTree event prob sum count l r) = do
     index <- randomPositiveUpto sum
-    let result | index > sumOf l + prob = sample r
+    let result | index > sumOf l + prob = sampleTree r
                | index > sumOf l        = return event
-               | index > 0              = sample l
+               | index > 0              = sampleTree l
     result
 
-sumInvariant :: (Num p, Eq p) => Distribution p e -> Bool
+sizeInvariant :: (Num p, Eq p) => DTree p o -> Bool
+sizeInvariant Leaf = True
+sizeInvariant (DTree e p s c l r) = (c == countOf l + countOf r + 1) &&
+                                       (countOf l <= countOf r + 1) &&
+                                       (countOf r <= countOf l + 1) &&
+                                       sizeInvariant l &&
+                                       sizeInvariant r
+
+sumInvariant :: (Num p, Eq p) => DTree p e -> Bool
 sumInvariant Leaf = True
-sumInvariant (DTree e p s l r) = (s == p + sumOf l + sumOf r) && 
+sumInvariant (DTree e p s c l r) = (s == p + sumOf l + sumOf r) && 
                                  (sumInvariant l) &&
                                  (sumInvariant r)
 
-bstInvariant :: (Ord e, Eq p) => Distribution p e -> Bool
-bstInvariant Leaf = True
-bstInvariant (DTree e p s l r) = (l == Leaf || eventOf l < e) &&
-                                 (r == Leaf || eventOf r > e) &&
-                                 bstInvariant l &&
-                                 bstInvariant r
-
-heapInvariant :: (Ord p, Num p) => Distribution p e -> Bool
+heapInvariant :: (Ord p, Num p) => DTree p e -> Bool
 heapInvariant Leaf = True
-heapInvariant (DTree e p s l r) = (p > nodeProbability l) &&
-                                  (p > nodeProbability r) &&
+heapInvariant (DTree e p s c l r) = (p > probOf l) &&
+                                  (p > probOf r) &&
                                   heapInvariant l &&
                                   heapInvariant r
 
-zeroInvariant :: (Ord p, Num p) => Distribution p e -> Bool
+zeroInvariant :: (Ord p, Num p) => DTree p e -> Bool
 zeroInvariant Leaf = True
-zeroInvariant (DTree _ p _ l r) = (p /= 0) && 
+zeroInvariant (DTree _ p _ c l r) = (p /= 0) && 
                                   zeroInvariant l && 
                                   zeroInvariant r
 
 invariants :: (Num p, Ord p, Ord e) => Distribution p e -> Bool
-invariants dist | not (sumInvariant  dist) = error "Sum invariant failure"
-                | not (bstInvariant  dist) = error "BST invariant failure"
-                | not (heapInvariant dist) = error "Heap invariant failure"
-                | not (zeroInvariant dist) = error "Zero-chance values present"
-                | otherwise                = True
-
-test = foldl (flip $ uncurry insert) Leaf [(1,"a"),(2,"b"),(1,"c"),(7,"d"),(9,"e"),(7,"f")]
-testF = foldl (flip $ uncurry insert) Leaf [(1.0,"a"),(2.0,"b"),(1.0,"c"),(7.0,"d"),(9.0,"e"),(7.0,"f")]
+invariants (Distribution tree members dups)
+    | not (sumInvariant  tree) = error "Sum invariant failure"
+    | not (heapInvariant tree) = error "Heap invariant failure"
+    | not (zeroInvariant tree) = error "Zero-chance values present"
+    | not (sizeInvariant tree) = error "Tree is not balanced correctly"
+    | otherwise                = True
