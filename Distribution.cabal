@@ -17,7 +17,7 @@ extra-source-files:  README.md
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Distribution
+  exposed-modules:     Numeric.Probability.Distribution
   -- other-modules:       
   other-extensions:    BangPatterns, GeneralizedNewtypeDeriving
   build-depends:       base >=4.7 && <4.8, MonadRandom >=0.3 && <0.4, containers >=0.5 && <0.6
