@@ -45,6 +45,8 @@ module Numeric.Probability.Distribution (
     empty,
     insert,
     fromList,
+    -- * Modifying
+    reweight,
     -- * Reducing
     toList,
     foldrWithP,
@@ -84,6 +86,11 @@ rightOf   (DTree _ _ _ _ _ r) = r
 instance (Num p, Show p, Ord o, Show o) => Show (Distribution p o) where
     show dist = "fromList " ++ show (toList dist)
 
+-- | Reweights the probabilities in the distribution based on
+-- the given function. @n*log(n)@
+reweight :: (Ord o, Num p, Ord p) => ((o,p) -> p) -> Distribution p o -> Distribution p o
+reweight f dist = fromUniqList . map update . toList $ dist
+    where update (o,p) = (o, f (o,p))
 
 -- | The sum of all probabilities in the distribution. @O(1)@
 cumulate :: (Num p) => Distribution p o -> p
@@ -92,6 +99,7 @@ cumulate (Distribution tree _ _) = sumOf tree
 -- | Normalizes the distribution.
 -- After normalizing, @'cumulate' distribution@ is 1. @O(n)@
 normalize :: (Fractional p) => Distribution p o -> Distribution p o
+normalize (Distribution Leaf _ _) = error "Can't normalize empty distribution"
 normalize (Distribution tree@(DTree _ _ sum _ _ _) members dups) =
     Distribution (normalize' sum tree) members dups
 normalize' sum Leaf                = Leaf
