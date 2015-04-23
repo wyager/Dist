@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE BangPatterns #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -89,7 +89,7 @@ instance (Num p, Show p, Ord o, Show o) => Show (Distribution p o) where
 -- | Reweights the probabilities in the distribution based on
 -- the given function. @n*log(n)@
 reweight :: (Ord o, Num p, Ord p) => ((o,p) -> p) -> Distribution p o -> Distribution p o
-reweight f dist = fromUniqList . map update . toList $ dist
+reweight f = fromUniqList . map update . toList
     where update (o,p) = (o, f (o,p))
 
 -- | The sum of all probabilities in the distribution. @O(1)@
@@ -127,16 +127,16 @@ empty = Distribution Leaf Set.empty 0
 
 reduce :: (Ord o, Num p) => [(o,p)] -> Map.Map o p
 reduce = foldl' (\map (o,p) -> Map.insertWith (+) o p map) Map.empty
--- | @O(n*log(n))@ amortized. 
+-- | @O(n*log(n))@ 
 fromList :: (Ord o, Num p, Ord p) => [(o,p)] -> Distribution p o
-fromList xs = fromUniqList . Map.toList . reduce $ xs
--- | @O(n*log(n))@.
+fromList = fromUniqList . Map.toList . reduce
+-- | @O(n*log(n))@
 toList :: (Ord o, Num p) => Distribution p o -> [(o,p)]
-toList dist = Map.toList . reduce . toRepeatList $ dist
+toList = Map.toList . reduce . toRepeatList
 
--- | Assumes there are no repeated items in the list. @O(n*log(n))@ amortized.
+-- | Doesn't bother to remove duplicates. @O(n*log(n))@ amortized.
 fromUniqList :: (Ord o, Num p, Ord p) => [(o,p)] -> Distribution p o
-fromUniqList xs = foldl' (\dist pair -> insert pair dist) empty xs
+fromUniqList = foldl' (\dist pair -> insert pair dist) empty
 -- | Doesn't bother to eliminate repeats. @O(n)@
 toRepeatList :: Distribution p o -> [(o,p)]
 toRepeatList = foldrWithP (:) []
