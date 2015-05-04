@@ -114,12 +114,13 @@ normalize' sum (DTree e p s c l r) = DTree e (p/sum) (s/sum) c l' r'
 insert :: (Ord o, Num p, Ord p) => (o,p) -> Distribution p o -> Distribution p o
 insert (_, 0)  dist                              = dist
 insert (o',p') (Distribution tree outcomes dups) = if dups' * 2 <= countOf tree
-    then Distribution tree' outcomes' dups' -- Not too many repeated elements
-    else fromUniqList . toList $ Distribution tree' outcomes 0
+    then distribution' -- Not too many repeated elements
+    else fromUniqList . toList $ distribution'
     where
     dups' = if o' `member` outcomes then dups + 1 else dups
     outcomes' = Set.insert o' outcomes
     tree' = insertTree (o',p') tree
+    distribution' = Distribution tree' outcomes' dups'
 
 -- | The empty distribution. @O(1)@
 empty :: (Num p) => Distribution p o
