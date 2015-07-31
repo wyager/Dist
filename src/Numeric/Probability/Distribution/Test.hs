@@ -5,10 +5,10 @@ import System.Exit (exitFailure)
 
 main = do
     let result = do
-        mapM invariants floatTestMaps 
-        mapM invariants intTestMaps
-        mapM invariants normalizedFloatMaps
-        if all ((==1) . cumulate) normalizedFloatMaps
+         mapM invariants floatTestMaps 
+         mapM invariants intTestMaps
+         mapM invariants normalizedFloatMaps
+         if all ((==1) . cumulate) normalizedFloatMaps
             then return ()
             else Left "Normalization failure"
 
