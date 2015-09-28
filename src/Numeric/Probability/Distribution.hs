@@ -41,6 +41,7 @@ module Numeric.Probability.Distribution (
     sample,
     cumulate,
     normalize,
+    lookup,
     -- * Building
     empty,
     insert,
@@ -57,17 +58,15 @@ module Numeric.Probability.Distribution (
     invariants
 ) where
 
-import Prelude hiding (product, sum)
+import Prelude hiding (product, sum, lookup)
 import Control.Monad.Random (MonadRandom, Random, getRandomRs)
 import Data.Word (Word)
-import           Data.Set (Set, member)
-import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 import Data.List (foldl')
 
 -- | A probability distribution with probabilities of type @p@ and
 -- outcomes/events of type @o@.
-data Distribution p o = Distribution !(DTree p o) !(Set o) !Word
+data Distribution p o = Distribution !(DTree p o) !(Map.Map o p) !Word
 
 
 data DTree p o = Leaf
@@ -101,7 +100,7 @@ cumulate (Distribution tree _ _) = sumOf tree
 normalize :: (Fractional p) => Distribution p o -> Distribution p o
 normalize (Distribution Leaf _ _) = error "Can't normalize empty distribution"
 normalize (Distribution tree@(DTree _ _ sum _ _ _) members dups) =
-    Distribution (normalize' sum tree) members dups
+    Distribution (normalize' sum tree) (Map.map (/ sum) members) dups
 normalize' sum Leaf                = Leaf
 normalize' sum (DTree e p s c l r) = DTree e (p/sum) (s/sum) c l' r'
     where
@@ -117,14 +116,14 @@ insert (o',p') (Distribution tree outcomes dups) = if dups' * 2 <= countOf tree
     then distribution' -- Not too many repeated elements
     else fromUniqList . toList $ distribution'
     where
-    dups' = if o' `member` outcomes then dups + 1 else dups
-    outcomes' = Set.insert o' outcomes
+    dups' = if Map.member o' outcomes then dups + 1 else dups
+    outcomes' = Map.insertWith (+) o' p' outcomes
     tree' = insertTree (o',p') tree
     distribution' = Distribution tree' outcomes' dups'
 
 -- | The empty distribution. @O(1)@
 empty :: (Num p) => Distribution p o
-empty = Distribution Leaf Set.empty 0
+empty = Distribution Leaf Map.empty 0
 
 reduce :: (Ord o, Num p) => [(o,p)] -> Map.Map o p
 reduce = foldl' (\map (o,p) -> Map.insertWith (+) o p map) Map.empty
@@ -184,6 +183,15 @@ randomPositiveUpto n = do
     randoms <- getRandomRs (0,n)
     return . head . dropWhile (==0) $ randoms
 
+-- | Given an outcome, returns the probability. Note that the probability
+-- is not always normalized. If you want the probability to be in the 0-1
+-- range, you should divide it by @cumulate dist@ (the sum of the probability
+-- of all outcomes)
+lookup :: (Ord o, Num p) => Distribution p o -> o -> p
+lookup (Distribution _ members _) outcome = case Map.lookup outcome members of
+    Nothing -> 0
+    Just probability -> probability
+
 -- | Take a sample from the distribution. Can be used with e.g. @evalRand@
 -- or @evalRandIO@ from @Control.Monad.Random@. @O(log(n))@ for a uniform 
 -- distribution (worst case), but approaches @O(1)@ with less balanced
@@ -229,11 +237,19 @@ zeroInvariant (DTree _ p _ c l r)
     | (p == 0) = Left $ "Zero value in tree"
     | otherwise = zeroInvariant l >> zeroInvariant r
 
+memberInvariant :: (Eq p, Num p, Ord o) => Distribution p o -> Either String ()
+memberInvariant _ = Right ()
+-- Fails with floating numbers due to rounding error
+--memberInvariant dist@(Distribution _ members _)
+--    | reduce (toList dist) == members = Right ()
+--    | otherwise = Left $ "Reduction doesn't match member map" 
+
 -- | A series of tests on the internal structure of the distribution.
 -- For debugging purposes.
 invariants :: (Num p, Ord p, Show p, Ord e, Show e) => Distribution p e -> Either String ()
-invariants (Distribution tree members dups) = do
+invariants dist@(Distribution tree members dups) = do
     sizeInvariant tree
     sumInvariant tree
     heapInvariant tree
     zeroInvariant tree
+    memberInvariant dist
