@@ -24,7 +24,7 @@ library
   exposed-modules:     Numeric.Probability.Distribution
   -- other-modules:
   other-extensions:    BangPatterns, GeneralizedNewtypeDeriving
-  build-depends:       base >=4.7 && <= 4.9.1.0, MonadRandom >=0.3, containers >=0.5
+  build-depends:       base ==4.12.*, MonadRandom ==0.5.*, containers == 0.6.*
   hs-source-dirs:      src
   default-language:    Haskell2010
 
@@ -32,6 +32,6 @@ test-suite Test
   type: exitcode-stdio-1.0
   main-is: Numeric/Probability/Distribution/Test.hs
   other-extensions:    BangPatterns, GeneralizedNewtypeDeriving
-  build-depends:       base >=4.7 && <= 4.9.1.0, MonadRandom >=0.3, containers >=0.5
+  build-depends:       base ==4.12.*, MonadRandom ==0.5.*, containers == 0.6.*
   hs-source-dirs:      src
   default-language:    Haskell2010
