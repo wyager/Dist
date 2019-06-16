@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                Dist
-version:             0.4.0.0
+version:             0.4.2
 synopsis:            A Haskell library for probability distributions
 description:         This library provides a data structure and associated functions for representing discrete probability distributions.
 homepage:            https://github.com/wyager/Dist
