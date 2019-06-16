@@ -66,30 +66,39 @@ import Data.List (foldl')
 
 -- | A probability distribution with probabilities of type @p@ and
 -- outcomes/events of type @o@.
-data Distribution p o = Distribution !(DTree p o) !(Map.Map o p) !Word
+data Distribution p o = Distribution 
+    !(DTree p o)    -- Used for sampling
+    !(Map.Map o p)  -- Used for looking up probability by outcome and for deduping
+    !Word           -- Duplicate entry count
 
 
 data DTree p o = Leaf
-               | DTree !o !p !p !Word !(DTree p o) !(DTree p o)
+               | DTree 
+                    !o -- Some outcome
+                    !p -- Probability weight of this outcome
+                    !p -- Total probability weight contained in this subtree
+                    !Word -- Number of outcomes (not necessarily distinct) in this subtree
+                    !(DTree p o)
+                    !(DTree p o)
 
-outcomeOf (DTree o _ _ _ _ _) = o
+probOf :: Num p => DTree p o -> p
 probOf    Leaf                = 0
 probOf    (DTree _ p _ _ _ _) = p
+sumOf ::  Num p => DTree p o -> p
 sumOf     Leaf                = 0
 sumOf     (DTree _ _ s _ _ _) = s
+countOf :: DTree p o -> Word
 countOf   Leaf                = 0
 countOf   (DTree _ _ _ c _ _) = c
-leftOf    (DTree _ _ _ _ l _) = l
-rightOf   (DTree _ _ _ _ _ r) = r
 
 instance (Num p, Show p, Ord o, Show o) => Show (Distribution p o) where
     show dist = "fromList " ++ show (toList dist)
 
 -- | Reweights the probabilities in the distribution based on
 -- the given function. @n*log(n)@
-reweight :: (Ord o, Num p, Ord p) => ((o,p) -> p) -> Distribution p o -> Distribution p o
+reweight :: (Ord o, Num p, Ord p) => (o -> p -> p) -> Distribution p o -> Distribution p o
 reweight f = fromUniqList . map update . toList
-    where update (o,p) = (o, f (o,p))
+    where update (o,p) = (o, f o p)
 
 -- | The sum of all probabilities in the distribution. @O(1)@
 cumulate :: (Num p) => Distribution p o -> p
@@ -97,15 +106,17 @@ cumulate (Distribution tree _ _) = sumOf tree
 
 -- | Normalizes the distribution.
 -- After normalizing, @'cumulate' distribution@ is 1. @O(n)@
-normalize :: (Fractional p) => Distribution p o -> Distribution p o
-normalize (Distribution Leaf _ _) = error "Can't normalize empty distribution"
-normalize (Distribution tree@(DTree _ _ sum _ _ _) members dups) =
-    Distribution (normalize' sum tree) (Map.map (/ sum) members) dups
-normalize' sum Leaf                = Leaf
-normalize' sum (DTree e p s c l r) = DTree e (p/sum) (s/sum) c l' r'
+-- Returns Nothing if distribution is empty.
+normalize :: (Fractional p) => Distribution p o -> Maybe (Distribution p o)
+normalize (Distribution Leaf _ _) = Nothing
+normalize (Distribution tree@(DTree _ _ sum' _ _ _) members dups) =
+    Just $ Distribution (normalize' sum' tree) (Map.map (/ sum') members) dups
     where
-    l' = normalize' sum l
-    r' = normalize' sum r
+    normalize' _    Leaf                = Leaf
+    normalize' sum'' (DTree e p s c l r) = DTree e (p/sum'') (s/sum'') c l' r'
+        where
+        l' = normalize' sum'' l
+        r' = normalize' sum'' r
 
 -- | Insert an outcome into the distribution.
 -- Inserting @(o,p1)@ and @(o,p2)@ results in the same sampled distribution as
@@ -126,7 +137,7 @@ empty :: (Num p) => Distribution p o
 empty = Distribution Leaf Map.empty 0
 
 reduce :: (Ord o, Num p) => [(o,p)] -> Map.Map o p
-reduce = foldl' (\map (o,p) -> Map.insertWith (+) o p map) Map.empty
+reduce = foldl' (\theMap (o,p) -> Map.insertWith (+) o p theMap) Map.empty
 -- | @O(n*log(n))@ 
 fromList :: (Ord o, Num p, Ord p) => [(o,p)] -> Distribution p o
 fromList = fromUniqList . Map.toList . reduce
@@ -149,7 +160,7 @@ foldrWithP :: ((o,p) -> b -> b) -> b -> Distribution p o -> b
 foldrWithP f b (Distribution tree _ _) = foldrTreeWithP f b tree
 
 foldrTreeWithP :: ((o,p) -> b -> b) -> b -> DTree p o -> b
-foldrTreeWithP f b Leaf = b
+foldrTreeWithP _ b Leaf = b
 foldrTreeWithP f b (DTree o p _ _ l r) = foldrTreeWithP f (f (o,p) (foldrTreeWithP f b r)) l
 
 insertTree :: (Num p, Ord p) => (o,p) -> DTree p o -> DTree p o
@@ -158,7 +169,7 @@ insertTree (o',p') (DTree o p s c l r)
     | p' <= p = if countOf l < countOf r
         then DTree o  p  s' c' (insertTree (o',p') l) r
         else DTree o  p  s' c' l                      (insertTree (o',p') r)
-    | p' >  p = if countOf l < countOf r
+    | otherwise = if countOf l < countOf r
         then DTree o' p' s' c' (insertTree (o,p)   l) r
         else DTree o' p' s' c' l                      (insertTree (o,p)   r)
     where
@@ -196,21 +207,22 @@ lookup (Distribution _ members _) outcome = case Map.lookup outcome members of
 -- or @evalRandIO@ from @Control.Monad.Random@. @O(log(n))@ for a uniform 
 -- distribution (worst case), but approaches @O(1)@ with less balanced
 -- distributions.
-sample :: (Ord p, Num p, Random p, MonadRandom m) => Distribution p o -> m o
+-- Returns Nothing on an empty distribution.
+sample :: (Ord p, Num p, Random p, MonadRandom m) => Distribution p o -> m (Maybe o)
 sample (Distribution tree _ _) = sampleTree tree
 
-sampleTree :: (Ord p, Num p, Random p, MonadRandom m) => DTree p o -> m o
-sampleTree Leaf = error "Error: Can't sample an empty distribution"
-sampleTree (DTree event prob sum count l r) = do
-    index <- randomPositiveUpto sum
+sampleTree :: (Ord p, Num p, Random p, MonadRandom m) => DTree p o -> m (Maybe o)
+sampleTree Leaf = return Nothing
+sampleTree (DTree event prob sum' _ l r) = do
+    index <- randomPositiveUpto sum'
     let result | index > sumOf l + prob = sampleTree r
-               | index > sumOf l        = return event
-               | index > 0              = sampleTree l
+               | index > sumOf l        = return (Just event)
+               | otherwise              = sampleTree l
     result
 
 sizeInvariant :: (Num p, Eq p) => DTree p o -> Either String ()
 sizeInvariant Leaf = Right ()
-sizeInvariant (DTree e p s c l r)
+sizeInvariant (DTree _ _ _ c l r)
     | (c /= countOf l + countOf r + 1) = Left $ "Count mismatch"
     | (countOf l > countOf r + 1) = Left $ "Left is too heavy"
     | (countOf r > countOf l + 1) = Left $ "Right is too heavy"
@@ -226,14 +238,14 @@ sumInvariant _    = Right ()
 
 heapInvariant :: (Ord p, Num p) => DTree p e -> Either String ()
 heapInvariant Leaf = Right ()
-heapInvariant (DTree e p s c l r) 
+heapInvariant (DTree _ p _ _ l r) 
     | (p < probOf l) = Left $ "Heap violation on left"
     | (p < probOf r) = Left $ "Heap violation on right"
     | otherwise = heapInvariant l >> heapInvariant r
 
 zeroInvariant :: (Ord p, Num p) => DTree p e -> Either String ()
 zeroInvariant Leaf = Right ()
-zeroInvariant (DTree _ p _ c l r)
+zeroInvariant (DTree _ p _ _ l r)
     | (p == 0) = Left $ "Zero value in tree"
     | otherwise = zeroInvariant l >> zeroInvariant r
 
@@ -247,7 +259,7 @@ memberInvariant _ = Right ()
 -- | A series of tests on the internal structure of the distribution.
 -- For debugging purposes.
 invariants :: (Num p, Ord p, Show p, Ord e, Show e) => Distribution p e -> Either String ()
-invariants dist@(Distribution tree members dups) = do
+invariants dist@(Distribution tree _ _) = do
     sizeInvariant tree
     sumInvariant tree
     heapInvariant tree
